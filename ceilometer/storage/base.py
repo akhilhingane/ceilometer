@@ -23,6 +23,7 @@ import datetime
 import math
 import six
 
+from ceilometer.openstack.common.gettextutils import _  # noqa
 from ceilometer.openstack.common import timeutils
 
 
@@ -244,7 +245,7 @@ class Connection(object):
                           end_timestamp=None, end_timestamp_op=None):
         """Yields list of AlarmChanges describing alarm history
 
-        Changes are always sorted in reverse order of occurence, given
+        Changes are always sorted in reverse order of occurrence, given
         the importance of currency.
 
         Segregation for non-administrative users is done on the basis

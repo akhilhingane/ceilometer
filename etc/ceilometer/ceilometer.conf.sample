@@ -23,7 +23,7 @@
 # Options defined in ceilometer.sample
 #
 
-# Source for samples emited on this instance (string value)
+# Source for samples emitted on this instance (string value)
 # Deprecated group/name - [DEFAULT]/counter_source
 #sample_source=openstack
 
@@ -835,6 +835,12 @@
 # value)
 #memcache_secret_key=<None>
 
+# (optional) indicate whether to set the X-Service-Catalog
+# header. If False, middleware will not ask for service
+# catalog on token validation and will not set the X-Service-
+# Catalog header. (boolean value)
+#include_service_catalog=true
+
 
 [matchmaker_redis]
 
@@ -877,6 +883,18 @@
 #store_events=false
 
 
+[publisher]
+
+#
+# Options defined in ceilometer.publisher.utils
+#
+
+# Secret value for signing metering messages (string value)
+# Deprecated group/name - [DEFAULT]/metering_secret
+# Deprecated group/name - [publisher_rpc]/metering_secret
+#metering_secret=change this or be hacked
+
+
 [publisher_rpc]
 
 #
@@ -886,9 +904,6 @@
 # the topic ceilometer uses for metering messages (string
 # value)
 #metering_topic=metering
-
-# Secret value for signing metering messages (string value)
-#metering_secret=change this or be hacked
 
 
 [rpc_notifier2]

@@ -467,14 +467,6 @@ class Connection(base.Connection):
                 source=meter.sources[0].id,
                 user_id=meter.user_id,
                 metadata=meter.resource_metadata,
-                meter=[
-                    api_models.ResourceMeter(
-                        counter_name=m.counter_name,
-                        counter_type=m.counter_type,
-                        counter_unit=m.counter_unit,
-                    )
-                    for m in meter.resource.meters
-                ],
             )
 
     @staticmethod
@@ -789,7 +781,7 @@ class Connection(base.Connection):
                           end_timestamp=None, end_timestamp_op=None):
         """Yields list of AlarmChanges describing alarm history
 
-        Changes are always sorted in reverse order of occurence, given
+        Changes are always sorted in reverse order of occurrence, given
         the importance of currency.
 
         Segregation for non-administrative users is done on the basis

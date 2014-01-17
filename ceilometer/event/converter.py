@@ -279,7 +279,7 @@ class NotificationEventsConverter(object):
                     *   ['*', '!image.*']  same as above.
         traits:  dictionary, The keys are trait names, the values are the trait
                  definitions
-            Each trait definiton is a dictionary with the following keys:
+            Each trait definition is a dictionary with the following keys:
                 type (optional): The data type for this trait. (as a string)
                     Valid options are: 'text', 'int', 'float' and 'datetime'
                     defaults to 'text' if not specified.
@@ -375,8 +375,8 @@ def setup_events(trait_plugin_mgr):
                 errmsg = (_("Invalid YAML syntax in Event Definitions file "
                             "%(file)s at line: %(line)s, column: %(column)s.")
                           % dict(file=config_file,
-                                 line=mark.line+1,
-                                 column=mark.column+1))
+                                 line=mark.line + 1,
+                                 column=mark.column + 1))
             else:
                 errmsg = (_("YAML error reading Event Definitions file "
                             "%(file)s")

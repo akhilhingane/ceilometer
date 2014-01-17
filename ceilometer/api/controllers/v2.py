@@ -987,8 +987,11 @@ class Resource(_Base):
     user_id = wtypes.text
     "The ID of the user who created the resource or updated it last"
 
-    timestamp = datetime.datetime
-    "UTC date and time of the last update to any meter for the resource"
+    first_sample_timestamp = datetime.datetime
+    "UTC date & time of the first sample associated with the resource"
+
+    last_sample_timestamp = datetime.datetime
+    "UTC date & time of the last sample associated with the resource"
 
     metadata = {wtypes.text: wtypes.text}
     "Arbitrary metadata associated with the resource"
@@ -1369,7 +1372,7 @@ class AlarmController(rest.RestController):
         auth_project = acl.get_limited_to_project(pecan.request.headers)
         alarms = list(self.conn.get_alarms(alarm_id=self._id,
                                            project=auth_project))
-        if len(alarms) < 1:
+        if not alarms:
             raise EntityNotFound(_('Alarm'), self._id)
         return alarms[0]
 
@@ -1571,7 +1574,7 @@ class AlarmsController(rest.RestController):
         # make sure alarms are unique by name per project.
         alarms = list(conn.get_alarms(name=data.name,
                                       project=data.project_id))
-        if len(alarms) > 0:
+        if alarms:
             raise ClientSideError(_("Alarm with that name exists"))
 
         try:
@@ -1802,7 +1805,7 @@ class EventsController(rest.RestController):
         """
         event_filter = storage.EventFilter(message_id=message_id)
         events = pecan.request.storage_conn.get_events(event_filter)
-        if len(events) == 0:
+        if not events:
             raise EntityNotFound(_("Event"), message_id)
 
         if len(events) > 1:
