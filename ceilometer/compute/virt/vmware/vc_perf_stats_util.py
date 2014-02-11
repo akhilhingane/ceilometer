@@ -3,6 +3,7 @@
 """
 
 from ceilometer.compute.virt.vmware import vim_util
+from ceilometer.compute.virt.vmware.vim import get_moref
 
 PERF_MANAGER_TYPE = "performanceManager"
 PERF_COUNTER_PROPERTY = "perfCounter"
@@ -53,7 +54,7 @@ def query_perf_counter_ids(vim):
 
     return perf_counter_id_map
 
-def query_perf_stats(vim, counter_id, instance_id, sample_interval, entity_moids, entity_start_times):
+def query_perf_stats(api_session, counter_id, instance_id, sample_interval, entity_moids, entity_start_times):
     """
     :param vim: Vim object used to execute VC queries
     :param counter_id: id of the perf counter in VC
@@ -67,9 +68,30 @@ def query_perf_stats(vim, counter_id, instance_id, sample_interval, entity_moids
                 from which stats are needed for that entity. 
                 End time is not restricted and hence stats till current time are returned.
     """
-    # Construct the QuerySpec
-    # metricId = 
-    # query_specs = []
-    # perfMgr = vim.service_content.perfManager
-    # perfMgr.queryStats();
+    
+    client_factory = api_session._vim.client.factory
+    
+    # Construct the QuerySpec    
+    metric_ids = []
+    metric_ids.append(client_factory.create('ns0:PerfMetricId'))
+    metric_ids[0].counterId = counter_id
+    metric_ids[0].instance = instance_id
+    
+    query_specs = []
+    
+    for entity_moid in entity_moids:
+
+        query_spec = client_factory.create('ns0:PerfQuerySpec')
+        query_spec.entity = get_moref(entity_moid, "VirtualMachine")
+        query_spec.metricId = metric_ids
+        query_spec.intervalId = sample_interval
+        
+        if entity_start_times.has_key(entity_moid) :
+            query_spec.startTime = entity_start_times[entity_moid]
+        
+        query_specs.append(query_spec)
+    
+    perfMgr = api_session._vim.service_content.perfManager
+    # perfMgr.queryStats(query_specs);
+    api_session.invoke_api(api_session._vim, 'QueryPerf', perfMgr, querySpec = query_specs)
     
