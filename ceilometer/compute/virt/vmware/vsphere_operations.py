@@ -8,12 +8,33 @@ from ceilometer.compute.virt.vmware.vim import get_moref
 PERF_MANAGER_TYPE = "PerformanceManager"
 PERF_COUNTER_PROPERTY = "perfCounter"
 REAL_TIME_SAMPLING_INTERVAL = 20  # in seconds
+MAX_OBJECTS = 1000
 
 
 class VsphereOperations(object):
 
     def __init__(self, api_session):
         self._api_session = api_session
+
+    def get_all_vms(self):
+        """
+        Method queries all the VMs in the VC and returns a map
+        of 'VM Name' -> VM moid
+        """
+        vim = self._api_session._vim
+
+        vm_name_to_moid = {}
+        result = vim_util.get_objects(vim, 'VirtualMachine',
+                          MAX_OBJECTS, ["name"], False)
+        while result:
+
+            for vm_object in result.objects:
+                vm_moid = vm_object.obj.value
+                vm_name = vm_object.propSet[0].val
+                vm_name_to_moid[vm_name] = vm_moid
+
+            result = vim_util.continue_retrieval(vim, result)
+        return vm_name_to_moid
 
     def query_perf_counter_ids(self):
         """
@@ -32,27 +53,27 @@ class VsphereOperations(object):
         # Query details of all the performance counters from VC
         vim = self._api_session._vim
         client_factory = vim.client.factory
-        perfManager = vim.service_content.perfManager
+        perf_manager = vim.service_content.perfManager
 
         prop_spec = vim_util.build_property_spec(
-                                                 client_factory,
-                                                 PERF_MANAGER_TYPE,
-                                                 [PERF_COUNTER_PROPERTY])
+            client_factory, PERF_MANAGER_TYPE, [PERF_COUNTER_PROPERTY]
+            )
 
-        obj_spec = vim_util.build_object_spec(client_factory,
-                                              perfManager, None)
+        obj_spec = vim_util.build_object_spec(
+            client_factory, perf_manager, None
+            )
 
         filter_spec = vim_util.build_property_filter_spec(
-                                                          client_factory,
-                                                          [prop_spec],
-                                                          [obj_spec])
+            client_factory, [prop_spec], [obj_spec]
+            )
 
         options = client_factory.create('ns0:RetrieveOptions')
         options.maxObjects = 1
 
+        prop_collector = vim.service_content.propertyCollector
         result = vim.RetrievePropertiesEx(
-                     vim.service_content.propertyCollector,
-                     specSet=[filter_spec], options=options)
+            prop_collector, specSet=[filter_spec], options=options
+            )
 
         perf_counter_infos = result.objects[0].propSet[0].val.PerfCounterInfo
 
@@ -74,15 +95,10 @@ class VsphereOperations(object):
     def query_realtime_perf_stats(self, entity_moid, counter_id,
                                    is_counter_aggregate):
         """
-        :param api_session: used to execute VC queries
-        :param counter_id: id of the perf counter in VC
-        :param instance_id: instance for which stats are to be queried.
-                    If stats are required for all instances then pass
-                    (a) empty string ("") for aggregate counters
-                    (b) asterisk ("*") for instance counters
-        :param sample_interval: interval of the stats in seconds
         :param entity_moid: moid of the entity for which stats are needed
-        :param from_time: the time from which the stats need to be queried
+        :param counter_id: id of the perf counter in VC
+        :param is_counter_aggregate: whether the counter is 'aggregate'
+               or 'instance'
         """
 
         client_factory = self._api_session._vim.client.factory
@@ -101,6 +117,6 @@ class VsphereOperations(object):
         query_spec.intervalId = REAL_TIME_SAMPLING_INTERVAL
         # [TODO:]query_spec.startTime = from_time
 
-        perfMgr = self._api_session._vim.service_content.perfManager
+        perf_manager = self._api_session._vim.service_content.perfManager
         return self._api_session.invoke_api(self._api_session._vim,
-                    'QueryPerf', perfMgr, querySpec=[query_spec])
+                    'QueryPerf', perf_manager, querySpec=[query_spec])
