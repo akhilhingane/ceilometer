@@ -1,3 +1,20 @@
+# vim: tabstop=4 shiftwidth=4 softtabstop=4
+
+# Copyright (c) 2014 VMware, Inc.
+# All Rights Reserved.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
 """
 @author: akhils@vmware.com
 """
@@ -100,10 +117,19 @@ class VsphereOperations(object):
 
         return perf_counter_full_name_to_id
 
-    def query_realtime_perf_stats(self, entity_moid, counter_id,
+    def query_vm_configured_value(self, vm_moid, property_name):
+        """
+        :param vm_moid: moid of the VM for which stats are needed
+        :param property_name: path of the property which is to be queried
+        """
+        vm_mobj = get_moref(vm_moid, "VirtualMachine")
+        vim = self._api_session._vim
+        return vim_util.get_object_property(vim, vm_mobj, property_name)
+
+    def query_vm_current_stat_value(self, vm_moid, counter_id,
                                    is_counter_aggregate):
         """
-        :param entity_moid: moid of the entity for which stats are needed
+        :param vm_moid: moid of the VM for which stats are needed
         :param counter_id: id of the perf counter in VC
         :param is_counter_aggregate: whether the counter is 'aggregate'
                or 'instance'
@@ -120,7 +146,7 @@ class VsphereOperations(object):
             metric_id.instance = "*"
 
         query_spec = client_factory.create('ns0:PerfQuerySpec')
-        query_spec.entity = get_moref(entity_moid, "VirtualMachine")
+        query_spec.entity = get_moref(vm_moid, "VirtualMachine")
         query_spec.metricId = [metric_id]
         query_spec.intervalId = REAL_TIME_SAMPLING_INTERVAL
         # [TODO:]query_spec.startTime = from_time
@@ -129,8 +155,15 @@ class VsphereOperations(object):
         perf_stats = self._api_session.invoke_api(self._api_session._vim,
                     'QueryPerf', perf_manager, querySpec=[query_spec])
 
+        stat_val = 0
+        if not perf_stats:
+            return stat_val
+
         entity_metric = perf_stats[0]
         sample_infos = entity_metric.sampleInfo
         samples_count = len(sample_infos)
-        # return the latest sample value
-        return entity_metric.value[0].value[samples_count - 1]
+
+        for metric_series in entity_metric.value:
+            stat_val += metric_series.value[samples_count - 1]
+
+        return stat_val
