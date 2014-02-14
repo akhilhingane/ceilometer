@@ -15,15 +15,12 @@ class VsphereOperations(object):
 
     def __init__(self, api_session):
         self._api_session = api_session
+        # Mapping between "VM's nova instance Id" -> "VM's vSphere MOID"
+        self.vm_moid_lookup_map = {}
 
-    def get_all_vms(self):
-        """
-        Method queries all the VMs in the VC and returns a map
-        of 'VM Name' -> VM moid
-        """
+    def _refresh_vm_moid_lookup_map(self):
         vim = self._api_session._vim
 
-        vm_name_to_moid = {}
         result = vim_util.get_objects(vim, 'VirtualMachine',
                           MAX_OBJECTS, ["name"], False)
         while result:
@@ -31,10 +28,21 @@ class VsphereOperations(object):
             for vm_object in result.objects:
                 vm_moid = vm_object.obj.value
                 vm_name = vm_object.propSet[0].val
-                vm_name_to_moid[vm_name] = vm_moid
+                self.vm_moid_lookup_map[vm_name] = vm_moid
 
             result = vim_util.continue_retrieval(vim, result)
-        return vm_name_to_moid
+
+    def get_vm_moid(self, vm_instance_id):
+        """
+        Method returns VC MOID of the VM by its NOVA instance ID
+        """
+        if vm_instance_id not in self.vm_moid_lookup_map:
+            self._refresh_vm_moid_lookup_map()
+
+        if vm_instance_id in self.vm_moid_lookup_map:
+            return self.vm_moid_lookup_map[vm_instance_id]
+        else:
+            return None
 
     def query_perf_counter_ids(self):
         """
@@ -118,5 +126,11 @@ class VsphereOperations(object):
         # [TODO:]query_spec.startTime = from_time
 
         perf_manager = self._api_session._vim.service_content.perfManager
-        return self._api_session.invoke_api(self._api_session._vim,
+        perf_stats = self._api_session.invoke_api(self._api_session._vim,
                     'QueryPerf', perf_manager, querySpec=[query_spec])
+
+        entity_metric = perf_stats[0]
+        sample_infos = entity_metric.sampleInfo
+        samples_count = len(sample_infos)
+        # return the latest sample value
+        return entity_metric.value[0].value[samples_count - 1]
