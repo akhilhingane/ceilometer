@@ -11,6 +11,7 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+
 """
 The MatchMaker classes should accept a Topic or Fanout exchange key and
 return keys for direct exchanges, per (approximate) AMQP parlance.
@@ -93,7 +94,7 @@ class MatchMakerRedis(mm_common.HeartbeatMatchMakerBase):
         if not redis:
             raise ImportError("Failed to import module redis.")
 
-        self.redis = redis.StrictRedis(
+        self.redis = redis.Redis(
             host=CONF.matchmaker_redis.host,
             port=CONF.matchmaker_redis.port,
             password=CONF.matchmaker_redis.password)

@@ -13,14 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-
 import contextlib
 import errno
 import os
 import tempfile
 
 from ceilometer.openstack.common import excutils
-from ceilometer.openstack.common.gettextutils import _  # noqa
+from ceilometer.openstack.common.gettextutils import _
 from ceilometer.openstack.common import log as logging
 
 LOG = logging.getLogger(__name__)

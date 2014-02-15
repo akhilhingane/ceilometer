@@ -17,7 +17,10 @@
 # under the License.
 
 import abc
+import collections
 import itertools
+
+import six
 
 from ceilometer.openstack.common import context
 from ceilometer.openstack.common import log
@@ -28,20 +31,26 @@ from ceilometer import transformer
 LOG = log.getLogger(__name__)
 
 
+@six.add_metaclass(abc.ABCMeta)
 class PollingTask(object):
     """Polling task for polling samples and inject into pipeline.
     A polling task can be invoked periodically or only once.
-
     """
 
     def __init__(self, agent_manager):
         self.manager = agent_manager
         self.pollsters = set()
+        # Resource definitions are indexed by the pollster
+        # Use dict of set here to remove the duplicated resource definitions
+        # for each pollster.
+        self.resources = collections.defaultdict(set)
         self.publish_context = pipeline.PublishContext(
             agent_manager.context)
 
     def add(self, pollster, pipelines):
         self.publish_context.add_pipelines(pipelines)
+        for pipeline in pipelines:
+            self.resources[pollster.name].update(pipeline.resources)
         self.pollsters.update([pollster])
 
     @abc.abstractmethod
@@ -49,6 +58,7 @@ class PollingTask(object):
         """Polling sample and publish into pipeline."""
 
 
+@six.add_metaclass(abc.ABCMeta)
 class AgentManager(os_service.Service):
 
     def __init__(self, extension_manager):

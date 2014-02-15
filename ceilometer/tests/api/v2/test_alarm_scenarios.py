@@ -26,6 +26,8 @@ import logging
 import uuid
 
 import mock
+
+from six import moves
 import testscenarios
 
 from ceilometer.storage import models
@@ -147,6 +149,23 @@ class TestAlarms(FunctionalTest,
                                    operator='or')
                          )]:
             self.conn.update_alarm(alarm)
+
+    @staticmethod
+    def _add_default_threshold_rule(alarm):
+        if 'exclude_outliers' not in alarm['threshold_rule']:
+            alarm['threshold_rule']['exclude_outliers'] = False
+
+    def _verify_alarm(self, json, alarm, expected_name=None):
+        if expected_name and alarm.name != expected_name:
+            self.fail("Alarm not found")
+        self._add_default_threshold_rule(json)
+        for key in json:
+            if key.endswith('_rule'):
+                storage_key = 'rule'
+            else:
+                storage_key = key
+            self.assertEqual(getattr(alarm, storage_key),
+                             json[key])
 
     def test_list_alarms(self):
         data = self.get_json('/alarms')
@@ -293,6 +312,20 @@ class TestAlarms(FunctionalTest,
         alarms = list(self.conn.get_alarms())
         self.assertEqual(4, len(alarms))
 
+    def test_post_null_threshold_rule(self):
+        json = {
+            'name': 'added_alarm_invalid_threshold_rule',
+            'type': 'threshold',
+            'threshold_rule': None,
+            'combination_rule': None,
+        }
+        resp = self.post_json('/alarms', params=json, expect_errors=True,
+                              status=400, headers=self.auth_headers)
+        self.assertEqual(
+            resp.json['error_message']['faultstring'],
+            "either threshold_rule or combination_rule "
+            "must be set")
+
     def test_post_invalid_alarm_statistic(self):
         json = {
             'name': 'added_alarm',
@@ -378,6 +411,7 @@ class TestAlarms(FunctionalTest,
             }
 
         }
+        self._add_default_threshold_rule(to_check)
 
         json = {
             'name': 'added_alarm_defaults',
@@ -404,7 +438,7 @@ class TestAlarms(FunctionalTest,
         else:
             self.fail("Alarm not found")
 
-    def test_post_alarm(self):
+    def test_post_conflict(self):
         json = {
             'enabled': False,
             'name': 'added_alarm',
@@ -427,6 +461,38 @@ class TestAlarms(FunctionalTest,
                 'period': '180',
             }
         }
+
+        self.post_json('/alarms', params=json, status=201,
+                       headers=self.auth_headers)
+        self.post_json('/alarms', params=json, status=409,
+                       headers=self.auth_headers)
+
+    def _do_test_post_alarm(self, exclude_outliers=None):
+        json = {
+            'enabled': False,
+            'name': 'added_alarm',
+            'state': 'ok',
+            'type': 'threshold',
+            'ok_actions': ['http://something/ok'],
+            'alarm_actions': ['http://something/alarm'],
+            'insufficient_data_actions': ['http://something/no'],
+            'repeat_actions': True,
+            'threshold_rule': {
+                'meter_name': 'ameter',
+                'query': [{'field': 'metadata.field',
+                           'op': 'eq',
+                           'value': '5',
+                           'type': 'string'}],
+                'comparison_operator': 'le',
+                'statistic': 'count',
+                'threshold': 50,
+                'evaluation_periods': '3',
+                'period': '180',
+            }
+        }
+        if exclude_outliers is not None:
+            json['threshold_rule']['exclude_outliers'] = exclude_outliers
+
         self.post_json('/alarms', params=json, status=201,
                        headers=self.auth_headers)
         alarms = list(self.conn.get_alarms(enabled=False))
@@ -434,7 +500,48 @@ class TestAlarms(FunctionalTest,
         json['threshold_rule']['query'].append({
             'field': 'project_id', 'op': 'eq',
             'value': self.auth_headers['X-Project-Id']})
-        # to check to BoundedInt type conversion
+        # to check to IntegerType type conversion
+        json['threshold_rule']['evaluation_periods'] = 3
+        json['threshold_rule']['period'] = 180
+        self._verify_alarm(json, alarms[0], 'added_alarm')
+
+    def test_post_alarm_outlier_exclusion_set(self):
+        self._do_test_post_alarm(True)
+
+    def test_post_alarm_outlier_exclusion_clear(self):
+        self._do_test_post_alarm(False)
+
+    def test_post_alarm_outlier_exclusion_defaulted(self):
+        self._do_test_post_alarm()
+
+    def test_post_alarm_noauth(self):
+        json = {
+            'enabled': False,
+            'name': 'added_alarm',
+            'state': 'ok',
+            'type': 'threshold',
+            'ok_actions': ['http://something/ok'],
+            'alarm_actions': ['http://something/alarm'],
+            'insufficient_data_actions': ['http://something/no'],
+            'repeat_actions': True,
+            'threshold_rule': {
+                'meter_name': 'ameter',
+                'query': [{'field': 'metadata.field',
+                           'op': 'eq',
+                           'value': '5',
+                           'type': 'string'}],
+                'comparison_operator': 'le',
+                'statistic': 'count',
+                'threshold': 50,
+                'evaluation_periods': '3',
+                'exclude_outliers': False,
+                'period': '180',
+            }
+        }
+        self.post_json('/alarms', params=json, status=201)
+        alarms = list(self.conn.get_alarms(enabled=False))
+        self.assertEqual(1, len(alarms))
+        # to check to BoundedInt type convertion
         json['threshold_rule']['evaluation_periods'] = 3
         json['threshold_rule']['period'] = 180
         if alarms[0].name == 'added_alarm':
@@ -483,6 +590,7 @@ class TestAlarms(FunctionalTest,
         self.assertEqual(1, len(alarms))
         self.assertEqual(alarms[0].user_id, 'auseridthatisnotmine')
         self.assertEqual(alarms[0].project_id, 'aprojectidthatisnotmine')
+        self._add_default_threshold_rule(json)
         if alarms[0].name == 'added_alarm':
             for key in json:
                 if key.endswith('_rule'):
@@ -550,16 +658,7 @@ class TestAlarms(FunctionalTest,
         self.assertEqual(1, len(alarms))
         self.assertEqual(alarms[0].user_id, self.auth_headers['X-User-Id'])
         self.assertEqual(alarms[0].project_id, 'aprojectidthatisnotmine')
-        if alarms[0].name == 'added_alarm':
-            for key in json:
-                if key.endswith('_rule'):
-                    storage_key = 'rule'
-                else:
-                    storage_key = key
-                self.assertEqual(getattr(alarms[0], storage_key),
-                                 json[key])
-        else:
-            self.fail("Alarm not found")
+        self._verify_alarm(json, alarms[0], 'added_alarm')
 
     def test_post_alarm_as_admin_no_project(self):
         """Test the creation of an alarm as admin for another project but
@@ -596,16 +695,7 @@ class TestAlarms(FunctionalTest,
         self.assertEqual(alarms[0].user_id, 'auseridthatisnotmine')
         self.assertEqual(alarms[0].project_id,
                          self.auth_headers['X-Project-Id'])
-        if alarms[0].name == 'added_alarm':
-            for key in json:
-                if key.endswith('_rule'):
-                    storage_key = 'rule'
-                else:
-                    storage_key = key
-                self.assertEqual(getattr(alarms[0], storage_key),
-                                 json[key])
-        else:
-            self.fail("Alarm not found")
+        self._verify_alarm(json, alarms[0], 'added_alarm')
 
     def test_post_alarm_combination(self):
         json = {
@@ -640,7 +730,7 @@ class TestAlarms(FunctionalTest,
 
     def test_post_combination_alarm_as_user_with_unauthorized_alarm(self):
         """Test that post a combination alarm as normal user/project
-        with a alarm_id unauthorized for this project/user
+        with an alarm_id unauthorized for this project/user
         """
         json = {
             'enabled': False,
@@ -659,15 +749,15 @@ class TestAlarms(FunctionalTest,
         }
         an_other_user_auth = {'X-User-Id': str(uuid.uuid4()),
                               'X-Project-Id': str(uuid.uuid4())}
-        resp = self.post_json('/alarms', params=json, status=400,
+        resp = self.post_json('/alarms', params=json, status=404,
                               headers=an_other_user_auth)
-        self.assertEqual(jsonutils.loads(resp.body)['error_message']
-                         ['faultstring'],
-                         "Alarm a doesn't exist")
+        self.assertEqual("Alarm a Not Found",
+                         jsonutils.loads(resp.body)['error_message']
+                         ['faultstring'])
 
     def test_post_combination_alarm_as_admin_on_behalf_of_an_other_user(self):
         """Test that post a combination alarm as admin on behalf of an other
-        user/project with a alarm_id unauthorized for this project/user
+        user/project with an alarm_id unauthorized for this project/user
         """
         json = {
             'enabled': False,
@@ -690,11 +780,11 @@ class TestAlarms(FunctionalTest,
         headers = {}
         headers.update(self.auth_headers)
         headers['X-Roles'] = 'admin'
-        resp = self.post_json('/alarms', params=json, status=400,
+        resp = self.post_json('/alarms', params=json, status=404,
                               headers=headers)
-        self.assertEqual(jsonutils.loads(resp.body)['error_message']
-                         ['faultstring'],
-                         "Alarm a doesn't exist")
+        self.assertEqual("Alarm a Not Found",
+                         jsonutils.loads(resp.body)['error_message']
+                         ['faultstring'])
 
     def test_post_combination_alarm_as_admin_success_owner_unset(self):
         self._do_post_combination_alarm_as_admin_success(False)
@@ -704,7 +794,7 @@ class TestAlarms(FunctionalTest,
 
     def _do_post_combination_alarm_as_admin_success(self, owner_is_set):
         """Test that post a combination alarm as admin on behalf of nobody
-        with a alarm_id of someone else, with owner set or not
+        with an alarm_id of someone else, with owner set or not
         """
         json = {
             'enabled': False,
@@ -760,7 +850,7 @@ class TestAlarms(FunctionalTest,
                 'operator': 'and',
             }
         }
-        self.post_json('/alarms', params=json, status=400,
+        self.post_json('/alarms', params=json, status=404,
                        headers=self.auth_headers)
         alarms = list(self.conn.get_alarms(enabled=False))
         self.assertEqual(0, len(alarms))
@@ -802,12 +892,7 @@ class TestAlarms(FunctionalTest,
         json['threshold_rule']['query'].append({
             'field': 'project_id', 'op': 'eq',
             'value': self.auth_headers['X-Project-Id']})
-        for key in json:
-            if key.endswith('_rule'):
-                storage_key = 'rule'
-            else:
-                storage_key = key
-            self.assertEqual(getattr(alarm, storage_key), json[key])
+        self._verify_alarm(json, alarm)
 
     def test_put_alarm_as_admin(self):
         json = {
@@ -854,12 +939,7 @@ class TestAlarms(FunctionalTest,
         alarm = list(self.conn.get_alarms(alarm_id=alarm_id, enabled=False))[0]
         self.assertEqual(alarm.user_id, 'myuserid')
         self.assertEqual(alarm.project_id, 'myprojectid')
-        for key in json:
-            if key.endswith('_rule'):
-                storage_key = 'rule'
-            else:
-                storage_key = key
-            self.assertEqual(getattr(alarm, storage_key), json[key])
+        self._verify_alarm(json, alarm)
 
     def test_put_alarm_wrong_field(self):
         # Note: wsme will ignore unknown fields so will just not appear in
@@ -895,13 +975,8 @@ class TestAlarms(FunctionalTest,
         alarm_id = data[0]['alarm_id']
 
         resp = self.put_json('/alarms/%s' % alarm_id,
-                             expect_errors=True,
                              params=json,
                              headers=self.auth_headers)
-
-        json['threshold_rule']['query'].append({
-            'field': 'project_id', 'op': 'eq',
-            'value': self.auth_headers['X-Project-Id']})
         self.assertEqual(resp.status_code, 200)
 
     def test_delete_alarm(self):
@@ -1030,6 +1105,7 @@ class TestAlarms(FunctionalTest,
                                     type='creation',
                                     user_id=alarm['user_id']),
                                history[0])
+        self._add_default_threshold_rule(new_alarm)
         new_alarm['rule'] = new_alarm['threshold_rule']
         del new_alarm['threshold_rule']
         new_alarm['rule']['query'].append({
@@ -1102,6 +1178,7 @@ class TestAlarms(FunctionalTest,
         data = dict(state='alarm')
         self._update_alarm(alarm, data, auth_headers=admin_auth)
 
+        self._add_default_threshold_rule(new_alarm)
         new_alarm['rule'] = new_alarm['threshold_rule']
         del new_alarm['threshold_rule']
 
@@ -1177,7 +1254,7 @@ class TestAlarms(FunctionalTest,
 
     def test_get_alarm_history_ordered_by_recentness(self):
         alarm = self._get_alarm('a')
-        for i in xrange(10):
+        for i in moves.xrange(10):
             self._update_alarm(alarm, dict(name='%s' % i))
         alarm = self._get_alarm('a')
         self._delete_alarm(alarm)
@@ -1189,7 +1266,7 @@ class TestAlarms(FunctionalTest,
         alarm['rule'] = alarm['threshold_rule']
         del alarm['threshold_rule']
         self._assert_in_json(alarm, history[0]['detail'])
-        for i in xrange(1, 10):
+        for i in moves.xrange(1, 10):
             detail = '{"name": "%s"}' % (10 - i)
             self._assert_is_subset(dict(alarm_id=alarm['alarm_id'],
                                         detail=detail,

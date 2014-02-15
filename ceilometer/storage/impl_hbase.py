@@ -25,7 +25,7 @@ import itertools
 import json
 import os
 import re
-import urlparse
+import six.moves.urllib.parse as urlparse
 
 import happybase
 
@@ -35,6 +35,7 @@ from ceilometer.openstack.common import network_utils
 from ceilometer.openstack.common import timeutils
 from ceilometer.storage import base
 from ceilometer.storage import models
+from ceilometer import utils
 
 LOG = log.getLogger(__name__)
 
@@ -174,10 +175,11 @@ class Connection(base.Connection):
 
         # store metadata fields with prefix "r_"
         resource_metadata = {}
-        if data['resource_metadata']:
-            resource_metadata = dict(('f:r_%s' % k, v)
-                                     for (k, v)
-                                     in data['resource_metadata'].iteritems())
+        res_meta_copy = data['resource_metadata']
+        if res_meta_copy:
+            for key, v in utils.recursive_keypairs(res_meta_copy,
+                                                   separator='.'):
+                resource_metadata['f:r_%s' % key] = unicode(v)
 
         # Make sure we know about the user and project
         if data['user_id']:
@@ -241,6 +243,7 @@ class Connection(base.Connection):
                   # TODO(shengjie) extra dimensions need to be added as CQ
                   'f:user_id': data['user_id'],
                   'f:project_id': data['project_id'],
+                  'f:message_id': data['message_id'],
                   'f:resource_id': data['resource_id'],
                   'f:source': data['source'],
                   # add in reversed_ts here for time range scan
@@ -707,7 +710,8 @@ def reverse_timestamp(dt):
 
 def make_query(user=None, project=None, meter=None,
                resource=None, source=None, start=None, start_op=None,
-               end=None, end_op=None, require_meter=True, query_only=False):
+               end=None, end_op=None, message_id=None, require_meter=True,
+               query_only=False):
     """Return a filter query string based on the selected parameters.
 
     :param user: Optional user-id
@@ -719,6 +723,7 @@ def make_query(user=None, project=None, meter=None,
     :param start_op: Optional start timestamp operator, like gt, ge
     :param end: Optional end timestamp
     :param end_op: Optional end timestamp operator, like lt, le
+    :param message_id: Optional message_id
     :param require_meter: If true and the filter does not have a meter,
             raise an error.
     :param query_only: If true only returns the filter query,
@@ -735,6 +740,9 @@ def make_query(user=None, project=None, meter=None,
     if resource:
         q.append("SingleColumnValueFilter ('f', 'resource_id', =, 'binary:%s')"
                  % resource)
+    if message_id:
+        q.append("SingleColumnValueFilter ('f', 'message_id', =, 'binary:%s')"
+                 % message_id)
     if source:
         q.append("SingleColumnValueFilter "
                  "('f', 'source', =, 'binary:%s')" % source)
@@ -792,6 +800,7 @@ def make_query_from_filter(sample_filter, require_meter=True):
                       sample_filter.start_timestamp_op,
                       sample_filter.end,
                       sample_filter.end_timestamp_op,
+                      sample_filter.message_id,
                       require_meter)
 
 

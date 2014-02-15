@@ -23,6 +23,8 @@ import datetime
 import math
 import six
 
+from six import moves
+
 from ceilometer.openstack.common.gettextutils import _  # noqa
 from ceilometer.openstack.common import timeutils
 
@@ -39,7 +41,7 @@ def iter_period(start, end, period):
     """
     period_start = start
     increment = datetime.timedelta(seconds=period)
-    for i in xrange(int(math.ceil(
+    for i in moves.xrange(int(math.ceil(
             timeutils.delta_seconds(start, end)
             / float(period)))):
         next_start = period_start + increment
@@ -315,4 +317,17 @@ class Connection(object):
         :param event_type: the type of the Event to filter by
         :param trait_type: the name of the Trait to filter by
         """
+
         raise NotImplementedError(_('Events not implemented.'))
+
+    @staticmethod
+    def query_samples(filter_expr=None, orderby=None, limit=None):
+        """Return an iterable of model.Sample objects.
+
+        :param filter_expr: Filter expression for query.
+        :param orderby: List of field name and direction pairs for order by.
+        :param limit: Maximum number of results to return.
+        """
+
+        raise NotImplementedError(_('Complex query for samples \
+            is not implemented.'))

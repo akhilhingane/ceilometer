@@ -11,6 +11,7 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+
 """
 Request Body limiting middleware.
 
@@ -20,8 +21,7 @@ from oslo.config import cfg
 import webob.dec
 import webob.exc
 
-from ceilometer.openstack.common.deprecated import wsgi
-from ceilometer.openstack.common.gettextutils import _  # noqa
+from ceilometer.openstack.common.gettextutils import _
 from ceilometer.openstack.common.middleware import base
 
 
@@ -29,8 +29,8 @@ from ceilometer.openstack.common.middleware import base
 max_req_body_size = cfg.IntOpt('max_request_body_size',
                                deprecated_name='osapi_max_request_body_size',
                                default=114688,
-                               help='the maximum body size '
-                                    'per each request(bytes)')
+                               help='The maximum body size '
+                                    'per request, in bytes')
 
 CONF = cfg.CONF
 CONF.register_opt(max_req_body_size)
@@ -69,7 +69,7 @@ class LimitingReader(object):
 class RequestBodySizeLimiter(base.Middleware):
     """Limit the size of incoming requests."""
 
-    @webob.dec.wsgify(RequestClass=wsgi.Request)
+    @webob.dec.wsgify
     def __call__(self, req):
         if req.content_length > CONF.max_request_body_size:
             msg = _("Request is too large.")

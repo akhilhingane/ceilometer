@@ -21,8 +21,10 @@
 
 import base64
 import datetime
+import json as jsonutils
 import logging
 import testscenarios
+import webtest.app
 
 from ceilometer.publisher import utils
 from ceilometer import sample
@@ -42,11 +44,36 @@ class TestListEmptyMeters(FunctionalTest,
         self.assertEqual([], data)
 
 
+class TestValidateUserInput(FunctionalTest,
+                            tests_db.MixinTestsWithBackendScenarios):
+
+    def test_list_meters_query_float_metadata(self):
+        self.assertRaises(webtest.app.AppError, self.get_json,
+                          '/meters/meter.test',
+                          q=[{'field': 'metadata.util',
+                          'op': 'eq',
+                          'value': '0.7.5',
+                          'type': 'float'}])
+        self.assertRaises(webtest.app.AppError, self.get_json,
+                          '/meters/meter.test',
+                          q=[{'field': 'metadata.util',
+                          'op': 'eq',
+                          'value': 'abacaba',
+                          'type': 'boolean'}])
+        self.assertRaises(webtest.app.AppError, self.get_json,
+                          '/meters/meter.test',
+                          q=[{'field': 'metadata.util',
+                          'op': 'eq',
+                          'value': '45.765',
+                          'type': 'integer'}])
+
+
 class TestListMeters(FunctionalTest,
                      tests_db.MixinTestsWithBackendScenarios):
 
     def setUp(self):
         super(TestListMeters, self).setUp()
+        self.messages = []
         for cnt in [
                 sample.Sample(
                     'meter.test',
@@ -131,6 +158,7 @@ class TestListMeters(FunctionalTest,
             msg = utils.meter_message_from_counter(
                 cnt,
                 self.CONF.publisher.metering_secret)
+            self.messages.append(msg)
             self.conn.record_metering_data(msg)
 
     def test_list_meters(self):
@@ -164,6 +192,33 @@ class TestListMeters(FunctionalTest,
         self.assertEqual('self.sample4', metadata['tag'])
         self.assertEqual('prop_value', metadata['properties.prop_1'])
 
+    def test_get_one_sample(self):
+        sample_id = self.messages[1]['message_id']
+        data = self.get_json('/samples/%s' % sample_id)
+        self.assertIn('id', data)
+        self.assertEqual(data, {
+            u'id': sample_id,
+            u'metadata': {u'display_name': u'test-server',
+                          u'is_public': u'False',
+                          u'size': u'0',
+                          u'tag': u'self.sample1',
+                          u'util': u'0.47'},
+            u'meter': u'meter.test',
+            u'project_id': u'project-id',
+            u'resource_id': u'resource-id',
+            u'timestamp': u'2012-07-02T11:40:00',
+            u'type': u'cumulative',
+            u'unit': u'',
+            u'user_id': u'user-id',
+            u'volume': 3.0})
+
+    def test_get_not_existing_sample(self):
+        resp = self.get_json('/samples/not_exists', expect_errors=True,
+                             status=404)
+        self.assertEqual(jsonutils.loads(resp.body)['error_message']
+                         ['faultstring'],
+                         "Sample not_exists Not Found")
+
     def test_list_samples_with_dict_metadata(self):
         data = self.get_json('/samples',
                              q=[{'field':
@@ -171,7 +226,7 @@ class TestListMeters(FunctionalTest,
                                  'op': 'eq',
                                  'value': 'sub_prop_value',
                                  }])
-        self.assertTrue('id' in data[0])
+        self.assertIn('id', data[0])
         del data[0]['id']  # Randomly generated
         self.assertEqual(data, [{
             u'user_id': u'user-id4',
@@ -279,7 +334,6 @@ class TestListMeters(FunctionalTest,
                          set(['meter.mine']))
         self.assertEqual(set(r['resource_metadata']['is_public'] for r
                              in data), set(['False']))
-        # FIXME(gordc): verify no false positive (Bug#1236496)
 
     def test_list_meters_query_string_metadata(self):
         data = self.get_json('/meters/meter.test',

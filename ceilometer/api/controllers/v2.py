@@ -29,6 +29,7 @@ import datetime
 import functools
 import inspect
 import json
+import jsonschema
 import uuid
 
 from oslo.config import cfg
@@ -57,7 +58,7 @@ LOG = log.getLogger(__name__)
 ALARM_API_OPTS = [
     cfg.BoolOpt('record_history',
                 default=True,
-                help='Record alarm change events'
+                help='Record alarm change events.'
                 ),
 ]
 
@@ -80,39 +81,6 @@ class EntityNotFound(ClientSideError):
             _("%(entity)s %(id)s Not Found") % {'entity': entity,
                                                 'id': id},
             status_code=404)
-
-
-class BoundedInt(wtypes.UserType):
-    basetype = int
-
-    def __init__(self, min=None, max=None):
-        self.min = min
-        self.max = max
-
-    @property
-    def name(self):
-        if self.min is not None and self.max is not None:
-            return 'int between %d and %d' % (self.min, self.max)
-        elif self.min is not None:
-            return 'int greater than %d' % self.min
-        else:
-            return 'int lower than %d' % self.max
-
-    @staticmethod
-    def frombasetype(value):
-        return int(value) if value is not None else None
-
-    def validate(self, value):
-        if self.min is not None and value < self.min:
-            error = _('Value %(value)s is invalid (should be greater or equal '
-                      'to %(min)s)') % dict(value=value, min=self.min)
-            raise ClientSideError(error)
-
-        if self.max is not None and value > self.max:
-            error = _('Value %(value)s is invalid (should be lower or equal '
-                      'to %(max)s)') % dict(value=value, max=self.max)
-            raise ClientSideError(error)
-        return value
 
 
 class AdvEnum(wtypes.wsproperty):
@@ -189,7 +157,8 @@ class Query(_Base):
     # Functions to convert the data field to the correct type.
     _type_converters = {'integer': int,
                         'float': float,
-                        'boolean': strutils.bool_from_string,
+                        'boolean': functools.partial(
+                            strutils.bool_from_string, strict=True),
                         'string': six.text_type,
                         'datetime': timeutils.parse_isotime}
 
@@ -505,14 +474,15 @@ def _get_query_timestamps(args={}):
 
 
 def _flatten_metadata(metadata):
-    """Return flattened resource metadata without nested structures
-    and with all values converted to unicode strings.
+    """Return flattened resource metadata with flattened nested
+    structures (except nested sets) and with all values converted
+    to unicode strings.
     """
     if metadata:
         return dict((k, unicode(v))
                     for k, v in utils.recursive_keypairs(metadata,
                                                          separator='.')
-                    if type(v) not in set([list, set]))
+                    if type(v) is not set)
     return {}
 
 
@@ -709,9 +679,9 @@ class MeterController(rest.RestController):
         'statistics': ['GET'],
     }
 
-    def __init__(self, meter_id):
-        pecan.request.context['meter_id'] = meter_id
-        self._id = meter_id
+    def __init__(self, meter_name):
+        pecan.request.context['meter_name'] = meter_name
+        self.meter_name = meter_name
 
     @wsme_pecan.wsexpose([OldSample], [Query], int)
     def get_all(self, q=[], limit=None):
@@ -723,7 +693,7 @@ class MeterController(rest.RestController):
         if limit and limit < 0:
             raise ClientSideError(_("Limit must be positive"))
         kwargs = _query_to_kwargs(q, storage.SampleFilter.__init__)
-        kwargs['meter'] = self._id
+        kwargs['meter'] = self.meter_name
         f = storage.SampleFilter(**kwargs)
         return [OldSample.from_db_model(e)
                 for e in pecan.request.storage_conn.get_samples(f, limit=limit)
@@ -731,7 +701,7 @@ class MeterController(rest.RestController):
 
     @wsme_pecan.wsexpose([OldSample], body=[OldSample])
     def post(self, samples):
-        """Post a list of new Samples to Ceilometer.
+        """Post a list of new Samples to Telemetry.
 
         :param samples: a list of samples within the request body.
         """
@@ -743,9 +713,9 @@ class MeterController(rest.RestController):
 
         published_samples = []
         for s in samples:
-            if self._id != s.counter_name:
+            if self.meter_name != s.counter_name:
                 raise wsme.exc.InvalidInput('counter_name', s.counter_name,
-                                            'should be %s' % self._id)
+                                            'should be %s' % self.meter_name)
 
             if s.message_id:
                 raise wsme.exc.InvalidInput('message_id', s.message_id,
@@ -801,7 +771,7 @@ class MeterController(rest.RestController):
             raise ClientSideError(_("Period must be positive."))
 
         kwargs = _query_to_kwargs(q, storage.SampleFilter.__init__)
-        kwargs['meter'] = self._id
+        kwargs['meter'] = self.meter_name
         f = storage.SampleFilter(**kwargs)
         g = _validate_groupby_fields(groupby)
         computed = pecan.request.storage_conn.get_meter_statistics(f,
@@ -874,11 +844,11 @@ class MetersController(rest.RestController):
     """Works on meters."""
 
     @pecan.expose()
-    def _lookup(self, meter_id, *remainder):
+    def _lookup(self, meter_name, *remainder):
         # NOTE(gordc): drop last path if empty (Bug #1202739)
         if remainder and not remainder[-1]:
             remainder = remainder[:-1]
-        return MeterController(meter_id), remainder
+        return MeterController(meter_name), remainder
 
     @wsme_pecan.wsexpose([Meter], [Query])
     def get_all(self, q=[]):
@@ -972,6 +942,230 @@ class SamplesController(rest.RestController):
         f = storage.SampleFilter(**kwargs)
         return map(Sample.from_db_model,
                    pecan.request.storage_conn.get_samples(f, limit=limit))
+
+    @wsme_pecan.wsexpose(Sample, wtypes.text)
+    def get_one(self, sample_id):
+        """Return a sample
+
+        :param sample_id: the id of the sample
+        """
+        f = storage.SampleFilter(message_id=sample_id)
+
+        samples = list(pecan.request.storage_conn.get_samples(f))
+        if len(samples) < 1:
+            raise EntityNotFound(_('Sample'), sample_id)
+
+        return Sample.from_db_model(samples[0])
+
+
+class ComplexQuery(_Base):
+    """Holds a sample query encoded in json."""
+
+    filter = wtypes.text
+    "The filter expression encoded in json."
+
+    orderby = wtypes.text
+    "List of single-element dicts for specifing the ordering of the results."
+
+    limit = int
+    "The maximum number of results to be returned."
+
+    @classmethod
+    def sample(cls):
+        return cls(filter='{\"and\": [{\"and\": [{\"=\": ' +
+                          '{\"counter_name\": \"cpu_util\"}}, ' +
+                          '{\">\": {\"counter_volume\": 0.23}}, ' +
+                          '{\"<\": {\"counter_volume\": 0.26}}]}, ' +
+                          '{\"or\": [{\"and\": [{\">\": ' +
+                          '{\"timestamp\": \"2013-12-01T18:00:00\"}}, ' +
+                          '{\"<\": ' +
+                          '{\"timestamp\": \"2013-12-01T18:15:00\"}}]}, ' +
+                          '{\"and\": [{\">\": ' +
+                          '{\"timestamp\": \"2013-12-01T18:30:00\"}}, ' +
+                          '{\"<\": ' +
+                          '{\"timestamp\": \"2013-12-01T18:45:00\"}}]}]}]}',
+                   orderby='[{\"counter_volume\": \"ASC\"}, ' +
+                           '{\"timestamp\": \"DESC\"}]',
+                   limit=42
+                   )
+
+
+def _list_to_regexp(items):
+    regexp = ["^%s$" % item for item in items]
+    regexp = "|".join(regexp)
+    regexp = "(?i)" + regexp
+    return regexp
+
+
+class ValidatedComplexQuery(object):
+    complex_operators = ["and", "or"]
+    order_directions = ["asc", "desc"]
+    simple_ops = ["=", "!=", "<", ">", "<=", "=<", ">=", "=>"]
+
+    complex_ops = _list_to_regexp(complex_operators)
+    simple_ops = _list_to_regexp(simple_ops)
+    order_directions = _list_to_regexp(order_directions)
+
+    schema_value = {
+        "oneOf": [{"type": "string"},
+                  {"type": "number"}],
+        "minProperties": 1,
+        "maxProperties": 1}
+
+    schema_field = {
+        "type": "object",
+        "patternProperties": {"[\S]+": schema_value},
+        "additionalProperties": False,
+        "minProperties": 1,
+        "maxProperties": 1}
+
+    schema_leaf = {
+        "type": "object",
+        "patternProperties": {simple_ops: schema_field},
+        "additionalProperties": False,
+        "minProperties": 1,
+        "maxProperties": 1}
+
+    schema_and_or_array = {
+        "type": "array",
+        "items": {"$ref": "#"},
+        "minItems": 2}
+
+    schema_and_or = {
+        "type": "object",
+        "patternProperties": {complex_ops: schema_and_or_array},
+        "additionalProperties": False,
+        "minProperties": 1,
+        "maxProperties": 1}
+
+    schema = {
+        "oneOf": [{"$ref": "#/definitions/leaf"},
+                  {"$ref": "#/definitions/and_or"}],
+        "minProperties": 1,
+        "maxProperties": 1,
+        "definitions": {"leaf": schema_leaf,
+                        "and_or": schema_and_or}}
+
+    orderby_schema = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "patternProperties":
+                {"[\S]+":
+                    {"type": "string",
+                     "pattern": order_directions}},
+            "additionalProperties": False,
+            "minProperties": 1,
+            "maxProperties": 1}}
+
+    timestamp_fields = ["timestamp"]
+
+    def __init__(self, query):
+        self.original_query = query
+
+    def validate(self, visibility_field):
+        """Validates the query content and does the necessary transformations.
+        """
+        if self.original_query.filter is wtypes.Unset:
+            self.filter_expr = None
+        else:
+            self.filter_expr = json.loads(self.original_query.filter)
+            self._validate_filter(self.filter_expr)
+            self._replace_isotime_with_datetime(self.filter_expr)
+            self._convert_operator_to_lower_case(self.filter_expr)
+
+        self._force_visibility(visibility_field)
+
+        if self.original_query.orderby is wtypes.Unset:
+            self.orderby = None
+        else:
+            self.orderby = json.loads(self.original_query.orderby)
+            self._validate_orderby(self.orderby)
+            self._convert_orderby_to_lower_case(self.orderby)
+
+        if self.original_query.limit is wtypes.Unset:
+            self.limit = None
+        else:
+            self.limit = self.original_query.limit
+
+        if self.limit is not None and self.limit <= 0:
+            msg = _('Limit should be positive')
+            raise ClientSideError(msg)
+
+    @staticmethod
+    def _convert_orderby_to_lower_case(orderby):
+        for orderby_field in orderby:
+            utils.lowercase_values(orderby_field)
+
+    def _traverse_postorder(self, tree, visitor):
+        op = tree.keys()[0]
+        if op.lower() in self.complex_operators:
+            for i, operand in enumerate(tree[op]):
+                self._traverse_postorder(operand, visitor)
+
+        visitor(tree)
+
+    def _check_cross_project_references(self, own_project_id,
+                                        visibility_field):
+        """Do not allow other than own_project_id
+        """
+        def check_project_id(subfilter):
+            op = subfilter.keys()[0]
+            if (op.lower() not in self.complex_operators
+                    and subfilter[op].keys()[0] == visibility_field
+                    and subfilter[op][visibility_field] != own_project_id):
+                raise ProjectNotAuthorized(subfilter[op][visibility_field])
+
+        self._traverse_postorder(self.filter_expr, check_project_id)
+
+    def _force_visibility(self, visibility_field):
+        """If the tenant is not admin insert an extra
+        "and <visibility_field>=<tenant's project_id>" clause to the query
+        """
+        authorized_project = acl.get_limited_to_project(pecan.request.headers)
+        is_admin = authorized_project is None
+        if not is_admin:
+            self._restrict_to_project(authorized_project, visibility_field)
+            self._check_cross_project_references(authorized_project,
+                                                 visibility_field)
+
+    def _restrict_to_project(self, project_id, visibility_field):
+        restriction = {"=": {visibility_field: project_id}}
+        if self.filter_expr is None:
+            self.filter_expr = restriction
+        else:
+            self.filter_expr = {"and": [restriction, self.filter_expr]}
+
+    def _replace_isotime_with_datetime(self, filter_expr):
+        def replace_isotime(subfilter):
+            op = subfilter.keys()[0]
+            if (op.lower() not in self.complex_operators
+                    and subfilter[op].keys()[0] in self.timestamp_fields):
+                field = subfilter[op].keys()[0]
+                date_time = self._convert_to_datetime(subfilter[op][field])
+                subfilter[op][field] = date_time
+
+        self._traverse_postorder(filter_expr, replace_isotime)
+
+    def _convert_operator_to_lower_case(self, filter_expr):
+        self._traverse_postorder(filter_expr, utils.lowercase_keys)
+
+    @staticmethod
+    def _convert_to_datetime(isotime):
+        try:
+            date_time = timeutils.parse_isotime(isotime)
+            date_time = date_time.replace(tzinfo=None)
+            return date_time
+        except ValueError:
+            LOG.exception(_("String %s is not a valid isotime") % isotime)
+            msg = _('Failed to parse the timestamp value %s') % isotime
+            raise ClientSideError(msg)
+
+    def _validate_filter(self, filter_expr):
+        jsonschema.validate(filter_expr, self.schema)
+
+    def _validate_orderby(self, orderby_expr):
+        jsonschema.validate(orderby_expr, self.orderby_schema)
 
 
 class Resource(_Base):
@@ -1078,7 +1272,7 @@ class AlarmThresholdRule(_Base):
     Ownership settings are automatically included based on the Alarm owner.
     """
 
-    period = wsme.wsattr(BoundedInt(min=1), default=60)
+    period = wsme.wsattr(wtypes.IntegerType(minimum=1), default=60)
     "The time range in seconds over which query"
 
     comparison_operator = AdvEnum('comparison_operator', str,
@@ -1093,8 +1287,11 @@ class AlarmThresholdRule(_Base):
                         'count', default='avg')
     "The statistic to compare to the threshold"
 
-    evaluation_periods = wsme.wsattr(BoundedInt(min=1), default=1)
+    evaluation_periods = wsme.wsattr(wtypes.IntegerType(minimum=1), default=1)
     "The number of historical periods to evaluate the threshold"
+
+    exclude_outliers = wsme.wsattr(bool, default=False)
+    "Whether datapoints with anomolously low sample counts are excluded"
 
     def __init__(self, query=None, **kwargs):
         if query:
@@ -1128,7 +1325,8 @@ class AlarmThresholdRule(_Base):
     def as_dict(self):
         rule = self.as_dict_from_keys(['period', 'comparison_operator',
                                        'threshold', 'statistic',
-                                       'evaluation_periods', 'meter_name'])
+                                       'evaluation_periods', 'meter_name',
+                                       'exclude_outliers'])
         rule['query'] = [q.as_dict() for q in self.query]
         return rule
 
@@ -1172,7 +1370,9 @@ class Alarm(_Base):
     """Representation of an alarm.
 
     .. note::
-        combination_rule and threshold_rule are mutually exclusive.
+        combination_rule and threshold_rule are mutually exclusive. The *type*
+        of the alarm should be set to *threshold* or *combination* and the
+        appropriate rule should be filled.
     """
 
     alarm_id = wtypes.text
@@ -1250,8 +1450,8 @@ class Alarm(_Base):
 
     @staticmethod
     def validate(alarm):
-        if (alarm.threshold_rule == wtypes.Unset
-                and alarm.combination_rule == wtypes.Unset):
+        if (alarm.threshold_rule in (wtypes.Unset, None)
+                and alarm.combination_rule in (wtypes.Unset, None)):
             error = _("either threshold_rule or combination_rule "
                       "must be set")
             raise ClientSideError(error)
@@ -1277,7 +1477,7 @@ class Alarm(_Base):
                 alarms = list(pecan.request.storage_conn.get_alarms(
                     alarm_id=id, project=project))
                 if not alarms:
-                    raise ClientSideError(_("Alarm %s doesn't exist") % id)
+                    raise EntityNotFound(_('Alarm'), id)
 
         return alarm
 
@@ -1286,9 +1486,9 @@ class Alarm(_Base):
         return cls(alarm_id=None,
                    name="SwiftObjectAlarm",
                    description="An alarm",
-                   type='threshold',
+                   type='combination',
                    threshold_rule=None,
-                   combination_rule=None,
+                   combination_rule=AlarmCombinationRule.sample(),
                    user_id="c96c887c216949acbdfbd8b494863567",
                    project_id="c96c887c216949acbdfbd8b494863567",
                    enabled=True,
@@ -1413,7 +1613,7 @@ class AlarmController(rest.RestController):
     def put(self, data):
         """Modify this alarm.
 
-        :param data: a alarm within the request body.
+        :param data: an alarm within the request body.
         """
         # Ensure alarm exists
         alarm_in = self._alarm()
@@ -1487,7 +1687,7 @@ class AlarmController(rest.RestController):
     def put_state(self, state):
         """Set the state of this alarm.
 
-        :param state: a alarm state within the request body.
+        :param state: an alarm state within the request body.
         """
         # note(sileht): body are not validated by wsme
         # Workaround for https://bugs.launchpad.net/wsme/+bug/1227229
@@ -1551,7 +1751,7 @@ class AlarmsController(rest.RestController):
     def post(self, data):
         """Create a new alarm.
 
-        :param data: a alarm within the request body.
+        :param data: an alarm within the request body.
         """
         conn = pecan.request.storage_conn
         now = timeutils.utcnow()
@@ -1575,7 +1775,9 @@ class AlarmsController(rest.RestController):
         alarms = list(conn.get_alarms(name=data.name,
                                       project=data.project_id))
         if alarms:
-            raise ClientSideError(_("Alarm with that name exists"))
+            raise ClientSideError(
+                _("Alarm with name='%s' exists") % data.name,
+                status_code=409)
 
         try:
             alarm_in = storage.models.Alarm(**change)
@@ -1665,16 +1867,23 @@ class Event(_Base):
     def get_traits(self):
         return self._traits
 
-    def set_traits(self, traits):
-        self._traits = {}
-        for trait in traits:
-            if trait.dtype == storage.models.Trait.DATETIME_TYPE:
-                value = trait.value.isoformat()
-            else:
-                value = six.text_type(trait.value)
-            self._traits[trait.name] = value
+    @staticmethod
+    def _convert_storage_trait(t):
+        """Helper method to convert a storage model into an API trait
+        instance. If an API trait instance is passed in, just return it.
+        """
+        if isinstance(t, Trait):
+            return t
+        value = (six.text_type(t.value)
+                 if not t.dtype == storage.models.Trait.DATETIME_TYPE
+                 else t.value.isoformat())
+        type = storage.models.Trait.get_name_by_type(t.dtype)
+        return Trait(name=t.name, type=type, value=value)
 
-    traits = wsme.wsproperty({wtypes.text: wtypes.text},
+    def set_traits(self, traits):
+        self._traits = map(self._convert_storage_trait, traits)
+
+    traits = wsme.wsproperty(wtypes.ArrayType(Trait),
                              get_traits,
                              set_traits)
     "Event specific properties"
@@ -1703,7 +1912,7 @@ def requires_admin(func):
         usr_limit, proj_limit = acl.get_limited_to(pecan.request.headers)
         # If User and Project are None, you have full access.
         if usr_limit and proj_limit:
-            raise ClientSideError(_("Not Authorized"), status_code=403)
+            raise ProjectNotAuthorized(proj_limit)
         return func(*args, **kwargs)
 
     return wrapped
@@ -1767,12 +1976,13 @@ class EventTypesController(rest.RestController):
 
     traits = TraitsController()
 
-    # FIXME(herndon): due to a bug in pecan, making this method
-    # get_all instead of get will hide the traits subcontroller.
-    # https://bugs.launchpad.net/pecan/+bug/1262277
+    @pecan.expose()
+    def get_one(self, event_type):
+        pecan.abort(404)
+
     @requires_admin
     @wsme_pecan.wsexpose([unicode])
-    def get(self):
+    def get_all(self):
         """Get all event types.
         """
         return list(pecan.request.storage_conn.get_event_types())
@@ -1820,6 +2030,29 @@ class EventsController(rest.RestController):
                      traits=event.traits)
 
 
+class QuerySamplesController(rest.RestController):
+    """Provides complex query possibilities for samples
+    """
+
+    @wsme_pecan.wsexpose([Sample], body=ComplexQuery)
+    def post(self, body):
+        """Define query for retrieving Sample data.
+
+        :param body: Query rules for the samples to be returned.
+        """
+        query = ValidatedComplexQuery(body)
+        query.validate(visibility_field="project_id")
+        conn = pecan.request.storage_conn
+        return [Sample.from_db_model(s)
+                for s in conn.query_samples(query.filter_expr,
+                                            query.orderby,
+                                            query.limit)]
+
+
+class QueryController(rest.RestController):
+    samples = QuerySamplesController()
+
+
 class V2Controller(object):
     """Version 2 API controller root."""
 
@@ -1829,3 +2062,5 @@ class V2Controller(object):
     alarms = AlarmsController()
     event_types = EventTypesController()
     events = EventsController()
+
+    query = QueryController()

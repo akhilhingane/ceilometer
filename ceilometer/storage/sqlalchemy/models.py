@@ -19,10 +19,10 @@ SQLAlchemy models for Ceilometer data.
 """
 
 import json
-import urlparse
+import six.moves.urllib.parse as urlparse
 
 from oslo.config import cfg
-from sqlalchemy import Column, Integer, String, Table, ForeignKey, DateTime, \
+from sqlalchemy import Column, Integer, String, Table, ForeignKey, \
     Index, UniqueConstraint, BigInteger
 from sqlalchemy import Float, Boolean, Text
 from sqlalchemy.dialects.mysql import DECIMAL
@@ -38,7 +38,7 @@ from ceilometer import utils
 sql_opts = [
     cfg.StrOpt('mysql_engine',
                default='InnoDB',
-               help='MySQL engine')
+               help='MySQL engine to use.')
 ]
 
 cfg.CONF.register_opts(sql_opts)
@@ -186,7 +186,7 @@ class MetaFloat(Base):
     )
     id = Column(Integer, ForeignKey('meter.id'), primary_key=True)
     meta_key = Column(String(255), primary_key=True)
-    value = Column(Float, default=False)
+    value = Column(Float(53), default=False)
 
 
 class Meter(Base):
@@ -265,13 +265,13 @@ class Alarm(Base):
     name = Column(Text)
     type = Column(String(50))
     description = Column(Text)
-    timestamp = Column(DateTime, default=timeutils.utcnow)
+    timestamp = Column(PreciseTimestamp, default=timeutils.utcnow)
 
-    user_id = Column(String(255), ForeignKey('user.id'))
-    project_id = Column(String(255), ForeignKey('project.id'))
+    user_id = Column(String(255))
+    project_id = Column(String(255))
 
     state = Column(String(255))
-    state_timestamp = Column(DateTime, default=timeutils.utcnow)
+    state_timestamp = Column(PreciseTimestamp, default=timeutils.utcnow)
 
     ok_actions = Column(JSONEncodedDict)
     alarm_actions = Column(JSONEncodedDict)
@@ -294,7 +294,7 @@ class AlarmChange(Base):
     user_id = Column(String(255), ForeignKey('user.id'))
     type = Column(String(20))
     detail = Column(Text)
-    timestamp = Column(DateTime, default=timeutils.utcnow)
+    timestamp = Column(PreciseTimestamp, default=timeutils.utcnow)
 
 
 class EventType(Base):
@@ -377,7 +377,7 @@ class Trait(Base):
     trait_type = relationship("TraitType", backref=backref('trait_type'))
 
     t_string = Column(String(255), nullable=True, default=None)
-    t_float = Column(Float, nullable=True, default=None)
+    t_float = Column(Float(53), nullable=True, default=None)
     t_int = Column(Integer, nullable=True, default=None)
     t_datetime = Column(PreciseTimestamp(), nullable=True, default=None)
 

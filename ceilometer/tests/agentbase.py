@@ -23,12 +23,12 @@ import abc
 import datetime
 
 import mock
+import six
 from stevedore import extension
-from stevedore.tests import manager as extension_tests
 
-from ceilometer import agent
 from ceilometer.openstack.common.fixture import config
 from ceilometer import pipeline
+from ceilometer import plugin
 from ceilometer import sample
 from ceilometer.tests import base
 from ceilometer import transformer
@@ -47,32 +47,37 @@ default_test_data = sample.Sample(
 )
 
 
-class TestPollster:
+class TestPollster(plugin.PollsterBase):
     test_data = default_test_data
 
-    def get_samples(self, manager, cache, instance=None):
+    def get_samples(self, manager, cache, instance=None, resources=[]):
         self.samples.append((manager, instance))
+        self.resources.extend(resources)
         return [self.test_data]
 
 
 class TestPollsterException(TestPollster):
-    def get_samples(self, manager, cache, instance=None):
+    def get_samples(self, manager, cache, instance=None, resources=[]):
         # Put an instance parameter here so that it can be used
         # by both central manager and compute manager
         # In future, we possibly don't need such hack if we
         # combine the get_samples() function again
         self.samples.append((manager, instance))
+        self.resources.extend(resources)
         raise Exception()
 
 
+@six.add_metaclass(abc.ABCMeta)
 class BaseAgentManagerTestCase(base.BaseTestCase):
 
     class Pollster(TestPollster):
         samples = []
+        resources = []
         test_data = default_test_data
 
     class PollsterAnother(TestPollster):
         samples = []
+        resources = []
         test_data = sample.Sample(
             name='testanother',
             type=default_test_data.type,
@@ -86,6 +91,7 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
 
     class PollsterException(TestPollsterException):
         samples = []
+        resources = []
         test_data = sample.Sample(
             name='testexception',
             type=default_test_data.type,
@@ -99,6 +105,7 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
 
     class PollsterExceptionAnother(TestPollsterException):
         samples = []
+        resources = []
         test_data = sample.Sample(
             name='testexceptionanother',
             type=default_test_data.type,
@@ -119,7 +126,7 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
             self.transformer_manager)
 
     def create_extension_manager(self):
-        return extension_tests.TestExtensionManager(
+        return extension.ExtensionManager.make_test_instance(
             [
                 extension.Extension(
                     'test',
@@ -142,23 +149,22 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
                     None,
                     self.PollsterExceptionAnother(), ),
             ],
-            'fake',
-            invoke_on_load=False,
         )
 
     @abc.abstractmethod
-    def setup_manager(self):
-        """Setup subclass specific managers."""
+    def create_manager(self):
+        """Return subclass specific manager."""
 
     @mock.patch('ceilometer.pipeline.setup_pipeline', mock.MagicMock())
     def setUp(self):
         super(BaseAgentManagerTestCase, self).setUp()
-        self.setup_manager()
+        self.mgr = self.create_manager()
         self.mgr.pollster_manager = self.create_extension_manager()
         self.pipeline_cfg = [{
             'name': "test_pipeline",
             'interval': 60,
             'counters': ['test'],
+            'resources': ['test://'],
             'transformers': [],
             'publishers': ["test"],
         }, ]
@@ -174,12 +180,18 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
         self.PollsterAnother.samples = []
         self.PollsterException.samples = []
         self.PollsterExceptionAnother.samples = []
+        self.Pollster.resources = []
+        self.PollsterAnother.resources = []
+        self.PollsterException.resources = []
+        self.PollsterExceptionAnother.resources = []
         super(BaseAgentManagerTestCase, self).tearDown()
 
     def test_setup_polling_tasks(self):
         polling_tasks = self.mgr.setup_polling_tasks()
         self.assertEqual(len(polling_tasks), 1)
         self.assertTrue(60 in polling_tasks.keys())
+        self.assertEqual(len(polling_tasks[60].resources), 1)
+        self.assertEqual(len(polling_tasks[60].resources['test']), 1)
         self.mgr.interval_task(polling_tasks.values()[0])
         pub = self.mgr.pipeline_manager.pipelines[0].publishers[0]
         self.assertEqual(pub.samples[0], self.Pollster.test_data)
@@ -189,6 +201,7 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
             'name': "test_pipeline",
             'interval': 10,
             'counters': ['test'],
+            'resources': ['test://'],
             'transformers': [],
             'publishers': ["test"],
         })
@@ -204,6 +217,7 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
                 'name': "test_pipeline_1",
                 'interval': 10,
                 'counters': ['test_invalid'],
+                'resources': ['invalid://'],
                 'transformers': [],
                 'publishers': ["test"],
             })
@@ -216,6 +230,7 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
             'name': "test_pipeline",
             'interval': 60,
             'counters': ['testanother'],
+            'resources': ['testanother://'],
             'transformers': [],
             'publishers': ["test"],
         })
@@ -224,6 +239,9 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
         self.assertEqual(len(polling_tasks), 1)
         pollsters = polling_tasks.get(60).pollsters
         self.assertEqual(len(pollsters), 2)
+        self.assertEqual(len(polling_tasks[60].resources), 2)
+        self.assertEqual(len(polling_tasks[60].resources['test']), 1)
+        self.assertEqual(len(polling_tasks[60].resources['testanother']), 1)
 
     def test_interval_exception_isolation(self):
         self.pipeline_cfg = [
@@ -231,6 +249,7 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
                 'name': "test_pipeline_1",
                 'interval': 10,
                 'counters': ['testexceptionanother'],
+                'resources': ['test://'],
                 'transformers': [],
                 'publishers': ["test"],
             },
@@ -238,6 +257,7 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
                 'name': "test_pipeline_2",
                 'interval': 10,
                 'counters': ['testexception'],
+                'resources': ['test://'],
                 'transformers': [],
                 'publishers': ["test"],
             },
@@ -254,7 +274,8 @@ class BaseAgentManagerTestCase(base.BaseTestCase):
         self.assertEqual(len(pub.samples), 0)
 
     def test_agent_manager_start(self):
-        mgr = agent.AgentManager(self.mgr.pollster_manager)
+        mgr = self.create_manager()
+        mgr.pollster_manager = self.mgr.pollster_manager
         mgr.create_polling_task = mock.MagicMock()
         mgr.tg = mock.MagicMock()
         mgr.start()

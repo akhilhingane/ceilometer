@@ -27,7 +27,7 @@ import six
 from six import moves
 
 from ceilometer.openstack.common import excutils
-from ceilometer.openstack.common.gettextutils import _  # noqa
+from ceilometer.openstack.common.gettextutils import _
 from ceilometer.openstack.common import importutils
 from ceilometer.openstack.common import jsonutils
 from ceilometer.openstack.common.rpc import common as rpc_common
@@ -80,7 +80,7 @@ CONF = cfg.CONF
 CONF.register_opts(zmq_opts)
 
 ZMQ_CTX = None  # ZeroMQ Context, must be global.
-matchmaker = None  # memoized matchmaker object
+matchmaker = None  # memorized matchmaker object
 
 
 def _serialize(data):

@@ -18,7 +18,7 @@
 """Storage backend management
 """
 
-import urlparse
+import six.moves.urllib.parse as urlparse
 
 from oslo.config import cfg
 import six
@@ -38,7 +38,7 @@ OLD_STORAGE_OPTS = [
     cfg.StrOpt('database_connection',
                secret=True,
                default=None,
-               help='DEPRECATED - Database connection string',
+               help='DEPRECATED - Database connection string.',
                ),
 ]
 
@@ -48,8 +48,8 @@ cfg.CONF.register_opts(OLD_STORAGE_OPTS)
 STORAGE_OPTS = [
     cfg.IntOpt('time_to_live',
                default=-1,
-               help="""number of seconds that samples are kept
-in the database for (<= 0 means forever)"""),
+               help="Number of seconds that samples are kept "
+               "in the database for (<= 0 means forever)."),
 ]
 
 cfg.CONF.register_opts(STORAGE_OPTS, group='database')
@@ -95,13 +95,15 @@ class SampleFilter(object):
     :param resource: Optional filter for resource id.
     :param meter: Optional filter for meter type using the meter name.
     :param source: Optional source filter.
+    :param message_id: Optional sample_id filter.
     :param metaquery: Optional filter on the metadata
     """
     def __init__(self, user=None, project=None,
                  start=None, start_timestamp_op=None,
                  end=None, end_timestamp_op=None,
                  resource=None, meter=None,
-                 source=None, metaquery={}):
+                 source=None, message_id=None,
+                 metaquery={}):
         self.user = user
         self.project = project
         self.start = utils.sanitize_timestamp(start)
@@ -112,6 +114,7 @@ class SampleFilter(object):
         self.meter = meter
         self.source = source
         self.metaquery = metaquery
+        self.message_id = message_id
 
 
 class EventFilter(object):
@@ -158,7 +161,10 @@ def dbsync():
 
 def expirer():
     service.prepare_service()
-    LOG.debug(_("Clearing expired metering data"))
-    storage_conn = get_connection(cfg.CONF)
-    storage_conn.clear_expired_metering_data(
-        cfg.CONF.database.time_to_live)
+    if cfg.CONF.database.time_to_live > 0:
+        LOG.debug(_("Clearing expired metering data"))
+        storage_conn = get_connection(cfg.CONF)
+        storage_conn.clear_expired_metering_data(
+            cfg.CONF.database.time_to_live)
+    else:
+        LOG.info(_("Nothing to clean, database time to live is disabled"))
