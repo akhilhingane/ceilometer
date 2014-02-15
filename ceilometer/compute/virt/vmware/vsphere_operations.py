@@ -19,8 +19,8 @@
 @author: akhils@vmware.com
 """
 
-from ceilometer.compute.virt.vmware import vim_util
 from ceilometer.compute.virt.vmware.vim import get_moref
+from ceilometer.compute.virt.vmware import vim_util
 
 PERF_MANAGER_TYPE = "PerformanceManager"
 PERF_COUNTER_PROPERTY = "perfCounter"
@@ -36,10 +36,11 @@ class VsphereOperations(object):
         self.vm_moid_lookup_map = {}
 
     def _refresh_vm_moid_lookup_map(self):
-        vim = self._api_session._vim
+        session = self._api_session
 
-        result = vim_util.get_objects(vim, 'VirtualMachine',
-                          MAX_OBJECTS, ["name"], False)
+        result = session.invoke_api(vim_util, "get_objects", session.vim,
+                                    "VirtualMachine", MAX_OBJECTS, ["name"],
+                                    False)
         while result:
 
             for vm_object in result.objects:
@@ -47,11 +48,11 @@ class VsphereOperations(object):
                 vm_name = vm_object.propSet[0].val
                 self.vm_moid_lookup_map[vm_name] = vm_moid
 
-            result = vim_util.continue_retrieval(vim, result)
+            result = session.invoke_api(vim_util, "continue_retrieval",
+                                        session.vim, result)
 
     def get_vm_moid(self, vm_instance_id):
-        """
-        Method returns VC MOID of the VM by its NOVA instance ID
+        """Method returns VC MOID of the VM by its NOVA instance ID.
         """
         if vm_instance_id not in self.vm_moid_lookup_map:
             self._refresh_vm_moid_lookup_map()
@@ -62,9 +63,9 @@ class VsphereOperations(object):
             return None
 
     def query_perf_counter_ids(self):
-        """
-        Method queries the details of various performance counters registered
-        with the specified VC.
+        """Method queries the details of various performance counters
+        registered with the specified VC.
+
         A VC performance counter is uniquely identified by the
         tuple {'Group Name', 'Counter Name', 'Rollup Type'}.
         It will have an id - counter ID (changes from one VC to another)
@@ -76,29 +77,26 @@ class VsphereOperations(object):
         """
 
         # Query details of all the performance counters from VC
-        vim = self._api_session._vim
-        client_factory = vim.client.factory
-        perf_manager = vim.service_content.perfManager
+        session = self._api_session
+        client_factory = session.vim.client.factory
+        perf_manager = session.vim.service_content.perfManager
 
         prop_spec = vim_util.build_property_spec(
-            client_factory, PERF_MANAGER_TYPE, [PERF_COUNTER_PROPERTY]
-            )
+            client_factory, PERF_MANAGER_TYPE, [PERF_COUNTER_PROPERTY])
 
         obj_spec = vim_util.build_object_spec(
-            client_factory, perf_manager, None
-            )
+            client_factory, perf_manager, None)
 
         filter_spec = vim_util.build_property_filter_spec(
-            client_factory, [prop_spec], [obj_spec]
-            )
+            client_factory, [prop_spec], [obj_spec])
 
         options = client_factory.create('ns0:RetrieveOptions')
         options.maxObjects = 1
 
-        prop_collector = vim.service_content.propertyCollector
-        result = vim.RetrievePropertiesEx(
-            prop_collector, specSet=[filter_spec], options=options
-            )
+        prop_collector = session.vim.service_content.propertyCollector
+        result = session.invoke_api(session.vim, "RetrievePropertiesEx",
+                                    prop_collector, specSet=[filter_spec],
+                                    options=options)
 
         perf_counter_infos = result.objects[0].propSet[0].val.PerfCounterInfo
 
@@ -118,24 +116,29 @@ class VsphereOperations(object):
         return perf_counter_full_name_to_id
 
     def query_vm_configured_value(self, vm_moid, property_name):
-        """
-        :param vm_moid: moid of the VM for which stats are needed
-        :param property_name: path of the property which is to be queried
+        """Method returns the value of specified property for a VM
+
+        :param vm_moid: moid of the VM whose property is to be queried
+        :param property_name: path of the property
         """
         vm_mobj = get_moref(vm_moid, "VirtualMachine")
-        vim = self._api_session._vim
-        return vim_util.get_object_property(vim, vm_mobj, property_name)
+        session = self._api_session
+        return session.invoke_api(vim_util, "get_object_property",
+                                  session.vim, vm_mobj, property_name)
 
     def query_vm_current_stat_value(self, vm_moid, counter_id,
-                                   is_counter_aggregate):
-        """
+                                    is_counter_aggregate):
+        """Method returns the current value of the specified perf stat counter
+        for a VM.
+
         :param vm_moid: moid of the VM for which stats are needed
         :param counter_id: id of the perf counter in VC
         :param is_counter_aggregate: whether the counter is 'aggregate'
                or 'instance'
         """
 
-        client_factory = self._api_session._vim.client.factory
+        session = self._api_session
+        client_factory = session.vim.client.factory
 
         # Construct the QuerySpec
         metric_id = client_factory.create('ns0:PerfMetricId')
@@ -149,11 +152,11 @@ class VsphereOperations(object):
         query_spec.entity = get_moref(vm_moid, "VirtualMachine")
         query_spec.metricId = [metric_id]
         query_spec.intervalId = REAL_TIME_SAMPLING_INTERVAL
-        # [TODO:]query_spec.startTime = from_time
+        # [TODO(akhils@vmware.com):]query_spec.startTime = from_time
 
-        perf_manager = self._api_session._vim.service_content.perfManager
-        perf_stats = self._api_session.invoke_api(self._api_session._vim,
-                    'QueryPerf', perf_manager, querySpec=[query_spec])
+        perf_manager = session.vim.service_content.perfManager
+        perf_stats = session.invoke_api(session.vim, 'QueryPerf', perf_manager,
+                                        querySpec=[query_spec])
 
         stat_val = 0
         if not perf_stats:

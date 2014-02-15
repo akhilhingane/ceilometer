@@ -20,14 +20,15 @@ Session and API call management for VMware ESX/VC server.
 Provides abstraction over cinder.volume.drivers.vmware.vim.Vim SOAP calls.
 """
 
-from eventlet import event
+from ceilometer.openstack.common.gettextutils import _  # noqa
 
-from ceilometer.openstack.common import log as logging
-from ceilometer.openstack.common import loopingcall
 from ceilometer.compute.virt.vmware import error_util
 from ceilometer.compute.virt.vmware import vim
 from ceilometer.compute.virt.vmware import vim_util
-from ceilometer.openstack.common.gettextutils import _  # noqa
+from ceilometer.openstack.common import log as logging
+from ceilometer.openstack.common import loopingcall
+from eventlet import event
+
 
 LOG = logging.getLogger(__name__)
 
