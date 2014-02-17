@@ -36,9 +36,8 @@ if __name__ == '__main__':
     # result = vc_perf_stats_util.query_perf_stats(api_session, 6, "", 20,
     #                                             ["vm-72"], {})
     vsphere_ops = VsphereOperations(api_session)
-    result = vsphere_ops.query_perf_counter_ids()
+    result = vsphere_ops.get_perf_counter_id("cpu:usagemhz:average")
     result = vsphere_ops.get_vm_moid("DEV-VC-5.5")
-    result = vsphere_ops.query_vm_configured_value("vm-21",
-                                                   "config.annotation")
+    result = vsphere_ops.query_vm_property("vm-21", "config.annotation")
     result = vsphere_ops.query_vm_current_stat_value("vm-21", 6, True)
     print('Done !!!')
