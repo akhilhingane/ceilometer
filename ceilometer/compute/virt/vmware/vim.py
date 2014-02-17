@@ -20,6 +20,7 @@ Classes for making VMware VI SOAP calls.
 """
 
 import httplib
+
 import suds
 
 from ceilometer.compute.virt.vmware import error_util
