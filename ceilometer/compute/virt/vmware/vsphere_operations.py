@@ -118,7 +118,7 @@ class VsphereOperations(object):
         return perf_counter_full_name_to_id
 
     def get_perf_counter_id(self, counter_full_name):
-        """ Method returns the ID of the performance counter by its name
+        """Method returns the ID of the performance counter by its name
 
         :param counter_full_name: Full name of the counter which is
              'Group Name:Counter Name:Rollup Type'
