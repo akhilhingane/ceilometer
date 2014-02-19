@@ -779,7 +779,7 @@ class Connection(base.Connection):
                                       [("timestamp", pymongo.DESCENDING)],
                                       limit)
 
-    def query_samples(self, filter_expr=None, orderby=None, limit=None):
+    def _retrieve_data(self, filter_expr, orderby, limit, model):
         if limit == 0:
             return []
         query_filter = {}
@@ -790,7 +790,13 @@ class Connection(base.Connection):
             query_filter = self._transform_filter(
                 filter_expr)
 
-        return self._retrieve_samples(query_filter, orderby_filter, limit)
+        retrieve = {models.Meter: self._retrieve_samples,
+                    models.Alarm: self._retrieve_alarms,
+                    models.AlarmChange: self._retrieve_alarm_changes}
+        return retrieve[model](query_filter, orderby_filter, limit)
+
+    def query_samples(self, filter_expr=None, orderby=None, limit=None):
+        return self._retrieve_data(filter_expr, orderby, limit, models.Meter)
 
     def _transform_orderby(self, orderby):
         orderby_filter = []
@@ -944,6 +950,22 @@ class Connection(base.Connection):
         del alarm['matching_metadata']
         alarm['rule']['query'] = query
 
+    def _retrieve_alarms(self, query_filter, orderby, limit):
+        if limit is not None:
+            alarms = self.db.alarm.find(query_filter,
+                                        limit=limit,
+                                        sort=orderby)
+        else:
+            alarms = self.db.alarm.find(
+                query_filter, sort=orderby)
+
+        for alarm in alarms:
+            a = {}
+            a.update(alarm)
+            del a['_id']
+            self._ensure_encapsulated_rule_format(a)
+            yield models.Alarm(**a)
+
     def get_alarms(self, name=None, user=None,
                    project=None, enabled=None, alarm_id=None, pagination=None):
         """Yields a lists of alarms that match filters
@@ -969,12 +991,7 @@ class Connection(base.Connection):
         if alarm_id is not None:
             q['alarm_id'] = alarm_id
 
-        for alarm in self.db.alarm.find(q):
-            a = {}
-            a.update(alarm)
-            del a['_id']
-            self._ensure_encapsulated_rule_format(a)
-            yield models.Alarm(**a)
+        return self._retrieve_alarms(q, [], None)
 
     def update_alarm(self, alarm):
         """update alarm
@@ -997,6 +1014,21 @@ class Connection(base.Connection):
         """Delete an alarm
         """
         self.db.alarm.remove({'alarm_id': alarm_id})
+
+    def _retrieve_alarm_changes(self, query_filter, orderby, limit):
+        if limit is not None:
+            alarms_history = self.db.alarm_history.find(query_filter,
+                                                        limit=limit,
+                                                        sort=orderby)
+        else:
+            alarms_history = self.db.alarm_history.find(
+                query_filter, sort=orderby)
+
+        for alarm_history in alarms_history:
+            ah = {}
+            ah.update(alarm_history)
+            del ah['_id']
+            yield models.AlarmChange(**ah)
 
     def get_alarm_changes(self, alarm_id, on_behalf_of,
                           user=None, project=None, type=None,
@@ -1041,14 +1073,25 @@ class Connection(base.Connection):
             if ts_range:
                 q['timestamp'] = ts_range
 
-        sort = [("timestamp", pymongo.DESCENDING)]
-        for alarm_change in self.db.alarm_history.find(q, sort=sort):
-            ac = {}
-            ac.update(alarm_change)
-            del ac['_id']
-            yield models.AlarmChange(**ac)
+        return self._retrieve_alarm_changes(q,
+                                            [("timestamp",
+                                              pymongo.DESCENDING)],
+                                            None)
 
     def record_alarm_change(self, alarm_change):
         """Record alarm change event.
         """
         self.db.alarm_history.insert(alarm_change)
+
+    def query_alarms(self, filter_expr=None, orderby=None, limit=None):
+        """Return an iterable of model.Alarm objects.
+        """
+        return self._retrieve_data(filter_expr, orderby, limit, models.Alarm)
+
+    def query_alarm_history(self, filter_expr=None, orderby=None, limit=None):
+        """Return an iterable of model.AlarmChange objects.
+        """
+        return self._retrieve_data(filter_expr,
+                                   orderby,
+                                   limit,
+                                   models.AlarmChange)
