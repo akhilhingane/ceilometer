@@ -1,8 +1,6 @@
 # Copyright (c) 2014 VMware, Inc.
 # All Rights Reserved.
 #
-#    Author: Akhil Hingane <akhils@vmware.com>
-#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -15,40 +13,40 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""
-"""
-
-from ceilometer.compute.virt.vmware import vim
 from ceilometer.compute.virt.vmware import vim_util
 
 
 PERF_MANAGER_TYPE = "PerformanceManager"
 PERF_COUNTER_PROPERTY = "perfCounter"
-REAL_TIME_SAMPLING_INTERVAL = 20  # in seconds
-MAX_OBJECTS = 1000
+# Time interval of Performance statistics in seconds
+REAL_TIME_SAMPLING_INTERVAL = 20
 
 
 class VsphereOperations(object):
-
-    def __init__(self, api_session):
+    """Class to invoke vSphere APIs calls required by various
+       pollsters, collecting data from VMware infrastructure.
+    """
+    def __init__(self, api_session, max_objects):
         self._api_session = api_session
-        # Mapping between "VM's nova instance Id" -> "VM's vSphere MOID"
-        self.vm_moid_lookup_map = {}
+        self._max_objects = max_objects
+        # Mapping between "VM's Nova instance Id" -> "VM's MOID"
+        # In case a VM is deployed by Nova, then its name is instance ID.
+        # So this map essentially has VM names as keys.
+        self._vm_moid_lookup_map = {}
 
         # Mapping from full name -> ID, for VC Performance counters
         self._perf_counter_id_lookup_map = None
 
-    def _refresh_vm_moid_lookup_map(self):
+    def _init_vm_moid_lookup_map(self):
         session = self._api_session
-
         result = session.invoke_api(vim_util, "get_objects", session.vim,
-                                    "VirtualMachine", MAX_OBJECTS, ["name"],
-                                    False)
+                                    "VirtualMachine", self._max_objects,
+                                    ["name"], False)
         while result:
             for vm_object in result.objects:
                 vm_moid = vm_object.obj.value
                 vm_name = vm_object.propSet[0].val
-                self.vm_moid_lookup_map[vm_name] = vm_moid
+                self._vm_moid_lookup_map[vm_name] = vm_moid
 
             result = session.invoke_api(vim_util, "continue_retrieval",
                                         session.vim, result)
@@ -56,26 +54,15 @@ class VsphereOperations(object):
     def get_vm_moid(self, vm_instance_id):
         """Method returns VC MOID of the VM by its NOVA instance ID.
         """
-        if vm_instance_id not in self.vm_moid_lookup_map:
-            self._refresh_vm_moid_lookup_map()
+        if vm_instance_id not in self._vm_moid_lookup_map:
+            self._init_vm_moid_lookup_map()
 
-        if vm_instance_id in self.vm_moid_lookup_map:
-            return self.vm_moid_lookup_map[vm_instance_id]
-        else:
-            return None
+        return self._vm_moid_lookup_map.get(vm_instance_id, None)
 
-    def _query_perf_counter_ids(self):
+    def _init_perf_counter_id_lookup_map(self):
         """Method queries the details of various performance counters
-        registered with the specified VC.
-
-        A VC performance counter is uniquely identified by the
-        tuple {'Group Name', 'Counter Name', 'Rollup Type'}.
-        It will have an id - counter ID (changes from one VC to another)
-        which is required to query performance stats from that VC.
-        This method aims at finding the counter IDs for various counters.
-
-        Let 'CounterFullName' be 'Group Name:Counter Name:Rollup Type'
-        The return type is a map from 'CounterFullName' -> 'Counter ID'.
+        registered with the specified VC and initializes the counter id lookup
+        map.
         """
 
         # Query details of all the performance counters from VC
@@ -102,8 +89,8 @@ class VsphereOperations(object):
 
         perf_counter_infos = result.objects[0].propSet[0].val.PerfCounterInfo
 
-        # Extract the counter Id for each counter and populate the return map
-        perf_counter_full_name_to_id = {}
+        # Extract the counter Id for each counter and populate the map
+        self._perf_counter_id_lookup_map = {}
         for perf_counter_info in perf_counter_infos:
 
             counter_group = perf_counter_info.groupInfo.key
@@ -113,27 +100,33 @@ class VsphereOperations(object):
 
             counter_full_name = counter_group + ":" + counter_name + ":" + \
                 counter_rollup_type
-            perf_counter_full_name_to_id[counter_full_name] = counter_id
-
-        return perf_counter_full_name_to_id
+            self._perf_counter_id_lookup_map[counter_full_name] = counter_id
 
     def get_perf_counter_id(self, counter_full_name):
-        """Method returns the ID of the performance counter by its name
+        """Method returns the ID of VC performance counter by its full name
 
-        :param counter_full_name: Full name of the counter which is
-             'Group Name:Counter Name:Rollup Type'
+        A VC performance counter is uniquely identified by the
+        tuple {'Group Name', 'Counter Name', 'Rollup Type'}.
+        It will have an id - counter ID (changes from one VC to another),
+        which is required to query performance stats from that VC.
+        This method returns the ID for a counter,
+        assuming 'CounterFullName' => 'Group Name:CounterName:RollupType'
+
+        :param counter_full_name
         """
         if not self._perf_counter_id_lookup_map:
-            self._perf_counter_id_lookup_map = self._query_perf_counter_ids()
+            self._init_perf_counter_id_lookup_map()
         return self._perf_counter_id_lookup_map[counter_full_name]
 
+    # TODO(akhils@vmware.com) Move this method to common library
+    # when it gets checked-in
     def query_vm_property(self, vm_moid, property_name):
         """Method returns the value of specified property for a VM
 
         :param vm_moid: moid of the VM whose property is to be queried
         :param property_name: path of the property
         """
-        vm_mobj = vim.get_moref(vm_moid, "VirtualMachine")
+        vm_mobj = vim_util.get_moref(vm_moid, "VirtualMachine")
         session = self._api_session
         return session.invoke_api(vim_util, "get_object_property",
                                   session.vim, vm_mobj, property_name)
@@ -161,7 +154,7 @@ class VsphereOperations(object):
             metric_id.instance = "*"
 
         query_spec = client_factory.create('ns0:PerfQuerySpec')
-        query_spec.entity = vim.get_moref(vm_moid, "VirtualMachine")
+        query_spec.entity = vim_util.get_moref(vm_moid, "VirtualMachine")
         query_spec.metricId = [metric_id]
         query_spec.intervalId = REAL_TIME_SAMPLING_INTERVAL
         # [TODO(akhils@vmware.com):]query_spec.startTime = from_time

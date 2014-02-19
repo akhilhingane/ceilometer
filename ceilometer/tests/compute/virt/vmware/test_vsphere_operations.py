@@ -1,8 +1,6 @@
 # Copyright (c) 2014 VMware, Inc.
 # All Rights Reserved.
 #
-#    Author: Akhil Hingane <akhils@vmware.com>
-#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -29,8 +27,45 @@ class VsphereOperationsTest(test.BaseTestCase):
                                            "test_password", 0, None,
                                            create_session=False)
         api_session._vim = mock.MagicMock()
-        self._vsphere_ops = vsphere_operations.VsphereOperations(api_session)
+        self._vsphere_ops = vsphere_operations.VsphereOperations(api_session,
+                                                                 1000)
         super(VsphereOperationsTest, self).setUp()
+
+    def test_get_vm_moid(self):
+
+        vm1_moid = "vm-1"
+        vm2_moid = "vm-2"
+        vm1_instance = "0a651a71-142c-4813-aaa6-42e5d5c80d85"
+        vm2_instance = "db1d2533-6bef-4cb2-aef3-920e109f5693"
+
+        def construct_mock_vm_object(vm_moid, vm_instance):
+            vm_object = mock.MagicMock()
+            vm_object.obj.value = vm_moid
+            vm_object.propSet[0].val = vm_instance
+            return vm_object
+
+        def retrieve_props_side_effect(pc, specSet, options):
+            # assert inputs
+            self.assertEqual(self._vsphere_ops._max_objects,
+                             options.maxObjects)
+            self.assertEqual("name", specSet[0].pathSet[0])
+
+            # mock return result
+            vm1 = construct_mock_vm_object(vm1_moid, vm1_instance)
+            vm2 = construct_mock_vm_object(vm2_moid, vm2_instance)
+            result = mock.MagicMock()
+            result.objects.__iter__.return_value = [vm1, vm2]
+            return result
+
+        vim_mock = self._vsphere_ops._api_session._vim
+        vim_mock.RetrievePropertiesEx.side_effect = retrieve_props_side_effect
+        vim_mock.ContinueRetrievePropertiesEx.return_value = None
+
+        vm_moid = self._vsphere_ops.get_vm_moid(vm1_instance)
+        self.assertEqual(vm1_moid, vm_moid)
+
+        vm_moid = self._vsphere_ops.get_vm_moid(vm2_instance)
+        self.assertEqual(vm2_moid, vm_moid)
 
     def test_query_vm_property(self):
 
